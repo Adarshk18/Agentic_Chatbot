@@ -35,7 +35,7 @@ graph.add_edge('chat_node', END)
 
 
 chatbot = graph.compile(checkpointer=checkpoint)
-chatbot
+# chatbot
 
 
 # thread_id = "1"
