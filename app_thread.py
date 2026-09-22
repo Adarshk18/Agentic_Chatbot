@@ -1,5 +1,10 @@
-from agentic_chatbot_backend import chatbot
+from agentic_chatbot_backend import (
+    chatbot,
+    get_all_threads,
+    save_chat_title
+)
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_openai import ChatOpenAI
 import streamlit as st
 import uuid
 
@@ -7,58 +12,166 @@ import uuid
 # Streamlit is a Python package to build UI in Python
 # without the use of HTML and CSS.
 
+llm = ChatOpenAI()
+
 
 def generate_thread_id():
     return str(uuid.uuid4())
 
 
-def add_threads(thread_id):
+def generate_chat_title(message):
+    response = llm.invoke(
+        f"""
+        Generate a short title for this conversation.
+
+        User message: {message}
+
+        Rules:
+        - Maximum 5 words
+        - No quotes
+        - Keep it descriptive
+        - Return only the title
+        """
+    )
+
+    return response.content.strip()
+
+
+def add_threads(thread_id, title):
     if thread_id not in st.session_state["chat_threads"]:
-        st.session_state["chat_threads"].append(thread_id)
+        st.session_state["chat_threads"][thread_id] = title
 
 
 def reset_chat():
+    # Create a new thread
     st.session_state["thread_id"] = generate_thread_id()
+
+    # Clear current messages
     st.session_state["message_history"] = []
 
-    add_threads(st.session_state["thread_id"])
+
+def load_conversation(thread_id):
+    state = chatbot.get_state(
+        config={
+            "configurable": {
+                "thread_id": thread_id
+            }
+        }
+    )
+
+    return state.values.get("messages", [])
 
 
 st.title("Agentic chatbot with Langgraph")
 
 
+# ============================== Session State ==============================
+
 if "message_history" not in st.session_state:
     st.session_state["message_history"] = []
+
 
 if "thread_id" not in st.session_state:
     st.session_state["thread_id"] = generate_thread_id()
 
+
 if "chat_threads" not in st.session_state:
-    st.session_state["chat_threads"] = []
+    st.session_state["chat_threads"] = get_all_threads()
 
 
-# ============================== Sidebar Threading Feature ==============================
+# ============================== Sidebar ==============================
 
 st.sidebar.title("My Conversations")
 
 
-# Create a button for starting a new conversation
+# Create a new chat
 if st.sidebar.button("New Chat"):
 
-    # Reset the current chat and create a new thread
     reset_chat()
 
-    # Rerun the Streamlit app to update the interface
+    # Rerun Streamlit app
     st.rerun()
 
 
+# Display all conversation threads in reverse order
+# Newest conversation appears first
+
+for thread_id, title in reversed(
+    list(st.session_state["chat_threads"].items())
+):
+
+    if st.sidebar.button(
+        title,
+        key=thread_id
+    ):
+
+        # Set selected thread as current thread
+        st.session_state["thread_id"] = thread_id
+
+        # Load messages from LangGraph
+        messages = load_conversation(thread_id)
+
+        temp_messages = []
+
+        for message in messages:
+
+            if isinstance(message, HumanMessage):
+                role = "user"
+
+            elif isinstance(message, AIMessage):
+                role = "assistant"
+
+            else:
+                continue
+
+            temp_messages.append({
+                "role": role,
+                "content": message.content
+            })
+
+        st.session_state["message_history"] = temp_messages
+
+        st.rerun()
+
+
+# ============================== Display Chat History ==============================
+
 for message in st.session_state["message_history"]:
+
     with st.chat_message(message["role"]):
-        st.text(message["content"])
+        st.write(message["content"])
+
+
+# ============================== User Input ==============================
 
 user_input = st.chat_input("Ask anything...")
 
+
 if user_input:
+
+    thread_id = st.session_state["thread_id"]
+
+    # ============================== Create Chat Title ==============================
+
+    # Generate title only when this is the first message
+    # of a new conversation.
+
+    if thread_id not in st.session_state["chat_threads"]:
+
+        title = generate_chat_title(user_input)
+
+        add_threads(
+            thread_id,
+            title
+        )
+
+        # Save title permanently in SQLite
+        save_chat_title(
+            thread_id,
+            title
+        )
+
+    # ============================== Add User Message ==============================
 
     st.session_state["message_history"].append({
         "role": "user",
@@ -68,11 +181,15 @@ if user_input:
     with st.chat_message("user"):
         st.write(user_input)
 
+    # ============================== LangGraph Config ==============================
+
     CONFIG = {
         "configurable": {
-            "thread_id": st.session_state["thread_id"]
+            "thread_id": thread_id
         }
     }
+
+    # ============================== AI Response ==============================
 
     with st.chat_message("assistant"):
 
@@ -91,7 +208,9 @@ if user_input:
             if isinstance(message_chunk, AIMessage)
         )
 
-        st.session_state["message_history"].append({
-            "role": "assistant",
-            "content": ai_message
-        })
+    # ============================== Save AI Message ==============================
+
+    st.session_state["message_history"].append({
+        "role": "assistant",
+        "content": ai_message
+    })
