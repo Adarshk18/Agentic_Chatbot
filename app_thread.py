@@ -183,10 +183,14 @@ if user_input:
 
     # ============================== LangGraph Config ==============================
 
+
     CONFIG = {
-        "configurable": {
-            "thread_id": thread_id
-        }
+        "configurable": {"thread_id": st.session_state["thread_id"]},
+        "metadata": {
+            "thread_id": st.session_state["thread_id"]
+        },
+        "run_name": "chat_trace",
+            
     }
 
     # ============================== AI Response ==============================
