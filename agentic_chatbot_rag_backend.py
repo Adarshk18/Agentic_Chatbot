@@ -1,6 +1,6 @@
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, trim_messages
 from langchain_openai import ChatOpenAI
 from langgraph.graph.message import add_messages
 from dotenv import load_dotenv
@@ -34,7 +34,7 @@ import tempfile
 load_dotenv()
 
 
-llm = ChatOpenAI()
+llm = ChatOpenAI(model="gpt-4o-mini")
 
 embeddings = OpenAIEmbeddings(
     model="text-embedding-3-small"
@@ -91,6 +91,22 @@ def ingest_rag_document(uploaded_file):
         # 2. Load document
         # -----------------------------
         docs = loader.load()
+
+        # OCR fallback for scanned/image-only PDFs with no text layer
+        if file_extension == ".pdf" and not any(
+            doc.page_content and doc.page_content.strip() for doc in docs
+        ):
+            print("⚠️ No text layer found in PDF, falling back to OCR...")
+
+            from langchain_community.document_loaders import UnstructuredPDFLoader
+
+            ocr_loader = UnstructuredPDFLoader(
+                file_path,
+                strategy="hi_res",
+                ocr_languages="eng"
+            )
+
+            docs = ocr_loader.load()
 
         print(f"📄 File: {file_name}")
         print(f"📄 Documents loaded: {len(docs)}")
@@ -287,6 +303,14 @@ tools = [get_stock_price, search_tool, calculator, rag_tool]
 # make the llm tool aware
 llm_with_tools = llm.bind_tools(tools)
 
+trimmer = trim_messages(
+    max_tokens=6000,
+    strategy="last",
+    token_counter=llm,
+    include_system=False,
+    start_on="human",
+)
+
 
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
@@ -301,6 +325,10 @@ def chat_node(state: ChatState):
         "- Use 'rag_tool' for questions about the uploaded documents.\n"
         "- Always retrieve relevant document content before answering "
         "document-related questions.\n"
+        "- If a message contains a '[System note: ... attached ... file(s) ...]' "
+        "tag, treat it as confirmation that a document is available and use "
+        "'rag_tool' to answer the user's question about it — do not ask the "
+        "user to upload it again.\n"
         "- Use 'search_tool' for current events, recent information, "
         "or information that requires an internet search.\n"
         "- Use 'calculator' for mathematical calculations.\n"
@@ -314,7 +342,8 @@ def chat_node(state: ChatState):
         "After receiving a tool result, provide a clear and helpful "
         "final answer."
 )
-    messages = [system_message, *state['messages']]
+    trimmed_history = trimmer.invoke(state['messages'])
+    messages = [system_message, *trimmed_history]
     response = llm_with_tools.invoke(messages)
     return {'messages': [response]}
 
@@ -389,31 +418,3 @@ def get_all_threads():
 
     return all_threads
 
-# CONFIG = {"configurable": {"thread_id": "default_thread"}}
-
-# res = chatbot.invoke(
-#     {"messages": [HumanMessage(content="Hello, how are you?")]}
-#     , config=CONFIG
-# )
-# print(res)
-
-# thread_id = "1"
-
-# initial_state = {
-#     'messages': [HumanMessage(content='what is Inference engineering in 3 points? Is it related to optimizing tokens, for GPUs')]
-# }
-# config = {'configurable': {'thread_id': thread_id}}
-# response = chatbot.invoke(initial_state,config=config)
-# print(response['messages'][-1].content)
-
-
-# while True:
-#     user_message = input('Type here: ')
-
-#     print('User: ', user_message)
-
-#     if user_message.strip().lower() in ['exit', 'quit', 'bye']:
-#         break
-#     config = {'configurable': {'thread_id': "1"}}
-#     response = chatbot.invoke({'messages': [HumanMessage(content=user_message)]},config=config)
-#     print('AI: ', response['messages'][-1].content)

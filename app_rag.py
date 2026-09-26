@@ -13,7 +13,7 @@ import traceback
 # Streamlit is a Python package to build UI in Python
 # without the use of HTML and CSS.
 
-llm = ChatOpenAI()
+llm = ChatOpenAI(model="gpt-4o-mini")
 
 
 def generate_thread_id():
@@ -50,6 +50,9 @@ def reset_chat():
     # Clear current messages
     st.session_state["message_history"] = []
 
+    # Reset URL so refresh doesn't reload the old thread
+    st.query_params["thread_id"] = st.session_state["thread_id"]
+
 
 def load_conversation(thread_id):
     state = chatbot.get_state(
@@ -73,7 +76,32 @@ if "message_history" not in st.session_state:
 
 
 if "thread_id" not in st.session_state:
-    st.session_state["thread_id"] = generate_thread_id()
+    qp_thread = st.query_params.get("thread_id")
+
+    if qp_thread:
+        st.session_state["thread_id"] = qp_thread
+        messages = load_conversation(qp_thread)
+
+        temp_messages = []
+
+        for message in messages:
+            if isinstance(message, HumanMessage):
+                role = "user"
+            elif isinstance(message, AIMessage):
+                role = "assistant"
+            else:
+                continue
+
+            temp_messages.append({
+                "role": role,
+                "content": message.content
+            })
+
+        st.session_state["message_history"] = temp_messages
+    else:
+        st.session_state["thread_id"] = generate_thread_id()
+
+st.query_params["thread_id"] = st.session_state["thread_id"]
 
 
 if "chat_threads" not in st.session_state:
@@ -81,6 +109,9 @@ if "chat_threads" not in st.session_state:
 
 if "uploaded_file_keys" not in st.session_state:
     st.session_state["uploaded_file_keys"] = set()
+
+if "failed_file_keys" not in st.session_state:
+    st.session_state["failed_file_keys"] = set()
 
 
 # ============================== Sidebar ==============================
@@ -176,44 +207,39 @@ if user_input:
 
         file_key = f"{uploaded_file.name}_{uploaded_file.size}"
 
-        # Process only if this file hasn't already been processed
-        if file_key not in st.session_state["uploaded_file_keys"]:
+        # Skip files already successfully processed
+        if file_key in st.session_state["uploaded_file_keys"]:
+            continue
 
-            with st.spinner(
-                f"Processing {uploaded_file.name}..."
-            ):
+        with st.spinner(
+            f"Processing {uploaded_file.name}..."
+        ):
 
-                try:
+            try:
 
-                    result = ingest_rag_document(
-                        uploaded_file
-                    )
+                result = ingest_rag_document(
+                    uploaded_file
+                )
 
-                    # Remember processed file
-                    st.session_state[
-                        "uploaded_file_keys"
-                    ].add(file_key)
+                # Remember processed file
+                st.session_state[
+                    "uploaded_file_keys"
+                ].add(file_key)
 
-                    st.toast(
-                        f"✅ {uploaded_file.name} processed!"
-                    )
+                st.session_state["failed_file_keys"].discard(file_key)
 
-                except Exception as e:
+                st.toast(
+                    f"✅ {uploaded_file.name} processed!"
+                )
 
-                    document_processing_failed = True
+            except Exception as e:
 
-                    st.error(
-                        f"❌ Failed to process "
-                        f"{uploaded_file.name}: {e}"
-                    )
+                st.session_state["failed_file_keys"].add(file_key)
 
-                    st.code(
-                        traceback.format_exc()
-                    )
-
-                    
-    if document_processing_failed:
-        st.stop()
+                st.warning(
+                    f"⚠️ Couldn't process "
+                    f"{uploaded_file.name}: {e} — continuing without it."
+                )
     # ============================== No Text ==============================
 
     # If user only uploaded a document and didn't ask anything,
@@ -223,7 +249,23 @@ if user_input:
 
         st.stop()
 
+
+    # ============================== Build LLM-facing message ==============================
+
+    if uploaded_files:
+        file_list = ", ".join(f.name for f in uploaded_files)
+
+        llm_text = (
+            f"{text}\n\n"
+            f"[System note: The user just attached the following file(s) in this message: "
+            f"{file_list}. They have already been processed and indexed. "
+            f"Use the rag_tool to retrieve relevant content from them before answering.]"
+        )
+    else:
+        llm_text = text
+
     # ============================== Create Chat Title ==============================
+    
 
     thread_id = st.session_state["thread_id"]
 
@@ -285,7 +327,7 @@ if user_input:
                 {
                     "messages": [
                         HumanMessage(
-                            content=text
+                            content=llm_text
                         )
                     ]
                 },
